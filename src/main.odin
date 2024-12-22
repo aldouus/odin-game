@@ -25,6 +25,8 @@ app_state: struct {
 	bind:        sg.Bindings,
 	input_state: Input_State,
 	player_pos:  Vector2,
+	y_velocity:  f32,
+	on_ground:   bool,
 }
 
 window_w :: 1280
@@ -129,6 +131,12 @@ init :: proc "c" () {
 
 prev_time: t.Time = t.now()
 
+gravity :: 700.0
+jump_force :: 300.0
+
+// magic number for bottom of window
+ground_y :: -180.0
+
 frame :: proc "c" () {
 	using runtime, linalg
 	context = runtime.default_context()
@@ -137,33 +145,38 @@ frame :: proc "c" () {
 	delta_time := cast(f32)t.duration_seconds(t.diff(current_time, prev_time))
 	prev_time = current_time
 
+	// gravity boisss
+	app_state.y_velocity -= gravity * delta_time
+	app_state.player_pos.y += app_state.y_velocity * delta_time
+
+	// check if we're grounded
+	if app_state.player_pos.y <= ground_y {
+    app_state.player_pos.y = ground_y
+    app_state.y_velocity = 0.0
+    app_state.on_ground = true
+} else {
+    app_state.on_ground = false
+}
+
+	// if space then jump
+	if key_down(app_state.input_state, .SPACE) && app_state.on_ground {
+		app_state.y_velocity = -jump_force
+		app_state.on_ground = false
+	}
+
+	// horizontal movement
 	speed := cast(f32)200.0
 	move_speed := speed * -delta_time
-	move_vector := v2{0, 0}
-
-	if key_down(app_state.input_state, .W) {
-		move_vector.y += move_speed
-	}
-
-	if key_down(app_state.input_state, .S) {
-		move_vector.y -= move_speed
-	}
 
 	if key_down(app_state.input_state, .A) {
-		move_vector.x -= move_speed
+		app_state.player_pos.x -= move_speed
 	}
 
 	if key_down(app_state.input_state, .D) {
-		move_vector.x += move_speed
+		app_state.player_pos.x += move_speed
 	}
 
-	if move_vector.x != 0 && move_vector.y != 0 {
-		move_vector *= sqrt(cast(f32)0.5) // normalize diagonal movement, so it's not fast as fuck
-	}
-
-	app_state.player_pos += move_vector
-
-	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
+	memset(&draw_frame, 0, size_of(draw_frame))
 
 	draw_test()
 
