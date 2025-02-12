@@ -29,6 +29,121 @@ app_state: struct {
 	on_ground:   bool,
 }
 
+// TEMP consts for world stuff
+WORLD_WIDTH :: 40
+WORLD_HEIGHT :: 30
+TILE_SIZE :: 32
+LAYER_COUNT :: 5
+
+Tile_Type :: enum u8 {
+	Air,
+	Grass,
+	Dirt,
+	Stone,
+}
+
+// 2D array for tiles
+World :: struct {
+	tiles: [WORLD_WIDTH][WORLD_HEIGHT]Tile_Type,
+}
+
+world: World
+
+init_world :: proc() {
+	for x := 0; x < WORLD_WIDTH; x += 1 {
+		for y := 0; y < WORLD_HEIGHT; y += 1 {
+			for layer := 0; layer < LAYER_COUNT; layer += 1 {
+				world.tiles[x][y] = .Air
+			}
+
+			if y < 5 {
+				if y == 4 {
+					world.tiles[x][y] = .Grass
+				} else if y == 3 {
+					world.tiles[x][y] = .Dirt
+				} else {
+					world.tiles[x][y] = .Stone
+				}
+			}
+		}
+	}
+}
+
+draw_world :: proc() {
+	offset_y := f32(window_h) / 2
+
+	for x := 0; x < WORLD_WIDTH; x += 1 {
+		for y := 0; y < WORLD_HEIGHT; y += 1 {
+			for layer := LAYER_COUNT - 1; layer >= 0; layer -= 1 {
+				tile := world.tiles[x][y]
+				if tile == .Air do continue
+
+				pos := Vector2 {
+					f32(x * TILE_SIZE) - f32(WORLD_WIDTH * TILE_SIZE) / 2,
+					f32(y * TILE_SIZE) - offset_y,
+				}
+
+				color := Vector4{1, 1, 1, 1}
+
+				#partial switch tile {
+				case .Grass:
+					color = {0.2, 0.8, 0.2, 1}
+				case .Dirt:
+					color = {0.6, 0.4, 0.2, 1}
+				case .Stone:
+					color = {0.5, 0.5, 0.5, 1}
+				case .Air:
+					continue
+				}
+
+				draw_rect_aabb(pos, {TILE_SIZE, TILE_SIZE}, color)
+			}
+		}
+	}
+}
+
+// convert screen space to world space
+screen_to_world_pos :: proc(screen_x, screen_y: f32) -> (int, int) {
+	world_x := int((screen_x - f32(window_w) / 2 + f32(WORLD_WIDTH * TILE_SIZE) / 2) / TILE_SIZE)
+	world_y := int((-screen_y + f32(window_h)) / TILE_SIZE)
+
+	return world_x, world_y
+}
+
+handle_mouse_input :: proc() {
+	// on left click break the hovered block
+	if key_down(app_state.input_state, .LEFT_MOUSE) {
+		mouse_x := app_state.input_state.mouse_pos.x
+		mouse_y := app_state.input_state.mouse_pos.y
+		world_x, world_y := screen_to_world_pos(mouse_x, mouse_y)
+
+		if world_x >= 0 && world_x < WORLD_WIDTH && world_y >= 0 && world_y < WORLD_HEIGHT {
+			for layer := 0; layer < LAYER_COUNT; layer += 1 {
+				if world.tiles[world_x][world_y] != .Air {
+					world.tiles[world_x][world_y] = .Air
+					break
+				}
+			}
+		}
+	}
+
+	// on right click place block (stone for now)
+	if key_down(app_state.input_state, .RIGHT_MOUSE) {
+		mouse_x := app_state.input_state.mouse_pos.x
+		mouse_y := app_state.input_state.mouse_pos.y
+		world_x, world_y := screen_to_world_pos(mouse_x, mouse_y)
+
+		if world_x >= 0 && world_x < WORLD_WIDTH && world_y >= 0 && world_y < WORLD_HEIGHT {
+			for layer := 0; layer < LAYER_COUNT; layer += 1 {
+				if world.tiles[world_x][world_y] == .Air {
+					world.tiles[world_x][world_y] = .Stone
+					break
+				}
+			}
+		}
+	}
+}
+
 window_w :: 1280
 window_h :: 720
 
@@ -51,6 +166,8 @@ main :: proc() {
 init :: proc "c" () {
 	using linalg, fmt
 	context = runtime.default_context()
+
+	init_world()
 
 	init_time = t.now()
 
@@ -131,8 +248,9 @@ init :: proc "c" () {
 
 prev_time: t.Time = t.now()
 
-gravity :: 700.0
+gravity :: 800.0
 jump_force :: 300.0
+jumps :: 2
 
 // magic number for bottom of window
 ground_y :: -180.0
@@ -140,6 +258,26 @@ ground_y :: -180.0
 frame :: proc "c" () {
 	using runtime, linalg
 	context = runtime.default_context()
+
+	// clear the screen
+	memset(&draw_frame, 0, size_of(draw_frame))
+
+	// draws a rectangle in world space
+	draw_frame.projection = matrix_ortho3d_f32(
+		window_w * -0.5,
+		window_w * 0.5,
+		window_h * -0.5,
+		window_h * 0.5,
+		-1,
+		1,
+	)
+
+	// draws a rectangle in camera space
+	draw_frame.camera_xform = Matrix4(1)
+
+	draw_world()
+	handle_mouse_input()
+	draw_test()
 
 	current_time := t.now()
 	delta_time := cast(f32)t.duration_seconds(t.diff(current_time, prev_time))
@@ -151,17 +289,19 @@ frame :: proc "c" () {
 
 	// check if we're grounded
 	if app_state.player_pos.y <= ground_y {
-    app_state.player_pos.y = ground_y
-    app_state.y_velocity = 0.0
-    app_state.on_ground = true
-} else {
-    app_state.on_ground = false
-}
+		app_state.player_pos.y = ground_y
+		app_state.y_velocity = 0.0
+		app_state.on_ground = true
+		jumps := 2
+	} else {
+		app_state.on_ground = false
+	}
 
 	// if space then jump
 	if key_down(app_state.input_state, .SPACE) && app_state.on_ground {
 		app_state.y_velocity = -jump_force
 		app_state.on_ground = false
+		jumps := jumps - 1
 	}
 
 	// horizontal movement
@@ -175,10 +315,6 @@ frame :: proc "c" () {
 	if key_down(app_state.input_state, .D) {
 		app_state.player_pos.x += move_speed
 	}
-
-	memset(&draw_frame, 0, size_of(draw_frame))
-
-	draw_test()
 
 	app_state.bind.images[IMG_tex0] = atlas.sg_image
 	app_state.bind.images[IMG_tex1] = images[font.img_id].sg_img
@@ -205,140 +341,143 @@ cleanup :: proc "c" () {
 
 Key_Code :: enum {
 	// copied from sokol_app
-	INVALID = 0,
-	SPACE = 32,
-	APOSTROPHE = 39,
-	COMMA = 44,
-	MINUS = 45,
-	PERIOD = 46,
-	SLASH = 47,
-	_0 = 48,
-	_1 = 49,
-	_2 = 50,
-	_3 = 51,
-	_4 = 52,
-	_5 = 53,
-	_6 = 54,
-	_7 = 55,
-	_8 = 56,
-	_9 = 57,
-	SEMICOLON = 59,
-	EQUAL = 61,
-	A = 65,
-	B = 66,
-	C = 67,
-	D = 68,
-	E = 69,
-	F = 70,
-	G = 71,
-	H = 72,
-	I = 73,
-	J = 74,
-	K = 75,
-	L = 76,
-	M = 77,
-	N = 78,
-	O = 79,
-	P = 80,
-	Q = 81,
-	R = 82,
-	S = 83,
-	T = 84,
-	U = 85,
-	V = 86,
-	W = 87,
-	X = 88,
-	Y = 89,
-	Z = 90,
-	LEFT_BRACKET = 91,
-	BACKSLASH = 92,
+	INVALID       = 0,
+	SPACE         = 32,
+	APOSTROPHE    = 39,
+	COMMA         = 44,
+	MINUS         = 45,
+	PERIOD        = 46,
+	SLASH         = 47,
+	_0            = 48,
+	_1            = 49,
+	_2            = 50,
+	_3            = 51,
+	_4            = 52,
+	_5            = 53,
+	_6            = 54,
+	_7            = 55,
+	_8            = 56,
+	_9            = 57,
+	SEMICOLON     = 59,
+	EQUAL         = 61,
+	A             = 65,
+	B             = 66,
+	C             = 67,
+	D             = 68,
+	E             = 69,
+	F             = 70,
+	G             = 71,
+	H             = 72,
+	I             = 73,
+	J             = 74,
+	K             = 75,
+	L             = 76,
+	M             = 77,
+	N             = 78,
+	O             = 79,
+	P             = 80,
+	Q             = 81,
+	R             = 82,
+	S             = 83,
+	T             = 84,
+	U             = 85,
+	V             = 86,
+	W             = 87,
+	X             = 88,
+	Y             = 89,
+	Z             = 90,
+	LEFT_BRACKET  = 91,
+	BACKSLASH     = 92,
 	RIGHT_BRACKET = 93,
-	GRAVE_ACCENT = 96,
-	WORLD_1 = 161,
-	WORLD_2 = 162,
-	ESCAPE = 256,
-	ENTER = 257,
-	TAB = 258,
-	BACKSPACE = 259,
-	INSERT = 260,
-	DELETE = 261,
-	RIGHT = 262,
-	LEFT = 263,
-	DOWN = 264,
-	UP = 265,
-	PAGE_UP = 266,
-	PAGE_DOWN = 267,
-	HOME = 268,
-	END = 269,
-	CAPS_LOCK = 280,
-	SCROLL_LOCK = 281,
-	NUM_LOCK = 282,
-	PRINT_SCREEN = 283,
-	PAUSE = 284,
-	F1 = 290,
-	F2 = 291,
-	F3 = 292,
-	F4 = 293,
-	F5 = 294,
-	F6 = 295,
-	F7 = 296,
-	F8 = 297,
-	F9 = 298,
-	F10 = 299,
-	F11 = 300,
-	F12 = 301,
-	F13 = 302,
-	F14 = 303,
-	F15 = 304,
-	F16 = 305,
-	F17 = 306,
-	F18 = 307,
-	F19 = 308,
-	F20 = 309,
-	F21 = 310,
-	F22 = 311,
-	F23 = 312,
-	F24 = 313,
-	F25 = 314,
-	KP_0 = 320,
-	KP_1 = 321,
-	KP_2 = 322,
-	KP_3 = 323,
-	KP_4 = 324,
-	KP_5 = 325,
-	KP_6 = 326,
-	KP_7 = 327,
-	KP_8 = 328,
-	KP_9 = 329,
-	KP_DECIMAL = 330,
-	KP_DIVIDE = 331,
-	KP_MULTIPLY = 332,
-	KP_SUBTRACT = 333,
-	KP_ADD = 334,
-	KP_ENTER = 335,
-	KP_EQUAL = 336,
-	LEFT_SHIFT = 340,
-	LEFT_CONTROL = 341,
-	LEFT_ALT = 342,
-	LEFT_SUPER = 343,
-	RIGHT_SHIFT = 344,
+	GRAVE_ACCENT  = 96,
+	WORLD_1       = 161,
+	WORLD_2       = 162,
+	ESCAPE        = 256,
+	ENTER         = 257,
+	TAB           = 258,
+	BACKSPACE     = 259,
+	INSERT        = 260,
+	DELETE        = 261,
+	RIGHT         = 262,
+	LEFT          = 263,
+	DOWN          = 264,
+	UP            = 265,
+	PAGE_UP       = 266,
+	PAGE_DOWN     = 267,
+	HOME          = 268,
+	END           = 269,
+	CAPS_LOCK     = 280,
+	SCROLL_LOCK   = 281,
+	NUM_LOCK      = 282,
+	PRINT_SCREEN  = 283,
+	PAUSE         = 284,
+	F1            = 290,
+	F2            = 291,
+	F3            = 292,
+	F4            = 293,
+	F5            = 294,
+	F6            = 295,
+	F7            = 296,
+	F8            = 297,
+	F9            = 298,
+	F10           = 299,
+	F11           = 300,
+	F12           = 301,
+	F13           = 302,
+	F14           = 303,
+	F15           = 304,
+	F16           = 305,
+	F17           = 306,
+	F18           = 307,
+	F19           = 308,
+	F20           = 309,
+	F21           = 310,
+	F22           = 311,
+	F23           = 312,
+	F24           = 313,
+	F25           = 314,
+	KP_0          = 320,
+	KP_1          = 321,
+	KP_2          = 322,
+	KP_3          = 323,
+	KP_4          = 324,
+	KP_5          = 325,
+	KP_6          = 326,
+	KP_7          = 327,
+	KP_8          = 328,
+	KP_9          = 329,
+	KP_DECIMAL    = 330,
+	KP_DIVIDE     = 331,
+	KP_MULTIPLY   = 332,
+	KP_SUBTRACT   = 333,
+	KP_ADD        = 334,
+	KP_ENTER      = 335,
+	KP_EQUAL      = 336,
+	LEFT_SHIFT    = 340,
+	LEFT_CONTROL  = 341,
+	LEFT_ALT      = 342,
+	LEFT_SUPER    = 343,
+	RIGHT_SHIFT   = 344,
 	RIGHT_CONTROL = 345,
-	RIGHT_ALT = 346,
-	RIGHT_SUPER = 347,
-	MENU = 348,
+	RIGHT_ALT     = 346,
+	RIGHT_SUPER   = 347,
+	MENU          = 348,
 
 	// randy: adding the mouse buttons on the end here so we can unify the enum and not need to use sapp.Mousebutton
-	LEFT_MOUSE = 400,
-	RIGHT_MOUSE = 401,
-	MIDDLE_MOUSE = 402,
+	LEFT_MOUSE    = 400,
+	RIGHT_MOUSE   = 401,
+	MIDDLE_MOUSE  = 402,
 }
 
 MAX_KEYCODES :: sapp.MAX_KEYCODES
 map_sokol_mouse_button :: proc "c" (sokol_mouse_button: sapp.Mousebutton) -> Key_Code {
 	#partial switch sokol_mouse_button {
-		case .LEFT: return .LEFT_MOUSE
-		case .RIGHT: return .RIGHT_MOUSE
-		case .MIDDLE: return .MIDDLE_MOUSE
+	case .LEFT:
+		return .LEFT_MOUSE
+	case .RIGHT:
+		return .RIGHT_MOUSE
+	case .MIDDLE:
+		return .MIDDLE_MOUSE
 	}
 	return nil
 }
@@ -351,7 +490,8 @@ Input_State_Flags :: enum {
 }
 
 Input_State :: struct {
-	keys: [MAX_KEYCODES]bit_set[Input_State_Flags],
+	keys:      [MAX_KEYCODES]bit_set[Input_State_Flags],
+	mouse_pos: Vector2,
 }
 
 reset_input_state_for_next_frame :: proc(state: ^Input_State) {
@@ -378,27 +518,32 @@ event :: proc "c" (event: ^sapp.Event) {
 	input_state := &app_state.input_state
 
 	#partial switch event.type {
-		case .MOUSE_UP:
+	case .MOUSE_MOVE:
+		app_state.input_state.mouse_pos = {event.mouse_x, event.mouse_y}
+	}
+
+	#partial switch event.type {
+	case .MOUSE_UP:
 		if .down in input_state.keys[map_sokol_mouse_button(event.mouse_button)] {
-			input_state.keys[map_sokol_mouse_button(event.mouse_button)] -= { .down }
-			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += { .just_released }
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] -= {.down}
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += {.just_released}
 		}
-		case .MOUSE_DOWN:
+	case .MOUSE_DOWN:
 		if !(.down in input_state.keys[map_sokol_mouse_button(event.mouse_button)]) {
-			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += { .down, .just_pressed }
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += {.down, .just_pressed}
 		}
 
-		case .KEY_UP:
+	case .KEY_UP:
 		if .down in input_state.keys[event.key_code] {
-			input_state.keys[event.key_code] -= { .down }
-			input_state.keys[event.key_code] += { .just_released }
+			input_state.keys[event.key_code] -= {.down}
+			input_state.keys[event.key_code] += {.just_released}
 		}
-		case .KEY_DOWN:
+	case .KEY_DOWN:
 		if !event.key_repeat && !(.down in input_state.keys[event.key_code]) {
-			input_state.keys[event.key_code] += { .down, .just_pressed }
+			input_state.keys[event.key_code] += {.down, .just_pressed}
 		}
 		if event.key_repeat {
-			input_state.keys[event.key_code] += { .repeat }
+			input_state.keys[event.key_code] += {.repeat}
 		}
 	}
 }
@@ -456,15 +601,24 @@ Pivot :: enum {
 
 scale_from_pivot :: proc(pivot: Pivot) -> Vector2 {
 	switch pivot {
-  	case .bottom_left: return v2{0.0, 0.0}
-  	case .bottom_center: return v2{0.5, 0.0}
-  	case .bottom_right: return v2{1.0, 0.0}
-  	case .center_left: return v2{0.0, 0.5}
-  	case .center_center: return v2{0.5, 0.5}
-  	case .center_right: return v2{1.0, 0.5}
-  	case .top_center: return v2{0.5, 1.0}
-  	case .top_left: return v2{0.0, 1.0}
-  	case .top_right: return v2{1.0, 1.0}
+	case .bottom_left:
+		return v2{0.0, 0.0}
+	case .bottom_center:
+		return v2{0.5, 0.0}
+	case .bottom_right:
+		return v2{1.0, 0.0}
+	case .center_left:
+		return v2{0.0, 0.5}
+	case .center_center:
+		return v2{0.5, 0.5}
+	case .center_right:
+		return v2{1.0, 0.5}
+	case .top_center:
+		return v2{0.5, 1.0}
+	case .top_left:
+		return v2{0.0, 1.0}
+	case .top_right:
+		return v2{1.0, 1.0}
 	}
 	return {}
 }
